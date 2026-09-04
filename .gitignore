@@ -1,0 +1,12 @@
+# ===== IDE / 智能体工作区状态（不属于工具本身） =====
+.codeartsdoer/
+
+# ===== 运行时自动生成的状态记忆文件 =====
+flash-esp32.state.json
+EasyInputFlashGUI.state.txt
+
+# ===== 系统 / 编辑器噪音 =====
+Thumbs.db
+Desktop.ini
+.~*
+*.log
