@@ -90,6 +90,12 @@ namespace EasyInputFlashWPF
         RadioButton rbFlashOnly;
         RadioButton rbBuildOnly;
         RadioButton rbIdentify;
+        TextBox txtBin;
+        TextBox txtBinAddr;
+        TextBox txtBinDir;
+        Button btnBrowseBin;
+        Button btnBrowseBinDir;
+        TextBlock _binNameInline;
         TextBlock txtStatus;
 
         // 日志
@@ -112,6 +118,7 @@ namespace EasyInputFlashWPF
         string RootTools;
         System.Collections.Generic.List<string> versions = new System.Collections.Generic.List<string>();
         string _lastVersion = "", _lastProject = "", _lastPort = "";
+        string _lastBin = "", _lastBinAddr = "0x10000", _lastBinDir = "";
 
         static string StateFile
         {
@@ -344,13 +351,83 @@ namespace EasyInputFlashWPF
             // ---------- 卡片：操作方式 ----------
             StackPanel p3 = new StackPanel();
             rbBuildFlash = MakeSeg("构建 + 烧录");
-            rbFlashOnly = MakeSeg("仅烧录（跳过编译）");
+            rbFlashOnly = MakeSeg("仅烧录");
             rbBuildOnly = MakeSeg("仅构建  build");
             rbIdentify = MakeSeg("识别设备芯片 / MAC");
             rbBuildFlash.IsChecked = true;
-            UIElement[] segs = { rbBuildFlash, rbFlashOnly, rbBuildOnly, rbIdentify };
-            foreach (UIElement s in segs) { ((Control)s).Margin = new Thickness(0, 4, 0, 0); p3.Children.Add(s); }
+            p3.Children.Add(rbBuildFlash);
+
+            // "仅烧录"行：radio + 内联 .bin 选择按钮 + 提示
+            Grid rowFlash = new Grid();
+            rowFlash.Margin = new Thickness(0, 4, 0, 0);
+            rowFlash.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            rowFlash.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            rowFlash.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            Grid.SetColumn(rbFlashOnly, 0);
+            rowFlash.Children.Add(rbFlashOnly);
+
+            btnBrowseBin = MakeButton("选 .bin", ACCENT, null, r: 6);
+            btnBrowseBin.Width = 64;
+            btnBrowseBin.Height = 28;
+            btnBrowseBin.FontSize = 11;
+            btnBrowseBin.Margin = new Thickness(8, 0, 0, 0);
+            btnBrowseBin.VerticalAlignment = VerticalAlignment.Center;
+            Grid.SetColumn(btnBrowseBin, 1);
+            rowFlash.Children.Add(btnBrowseBin);
+
+            TextBlock binHintInline = new TextBlock();
+            _binNameInline = binHintInline;
+            binHintInline.Text = "留空 = 项目烧录；选 .bin = 免工程直写";
+            binHintInline.FontSize = 10;
+            binHintInline.Foreground = new SolidColorBrush(Color.FromRgb(0x8A, 0x93, 0xA6));
+            binHintInline.VerticalAlignment = VerticalAlignment.Center;
+            binHintInline.Margin = new Thickness(8, 0, 0, 0);
+            binHintInline.TextWrapping = TextWrapping.NoWrap;
+            Grid.SetColumn(binHintInline, 2);
+            rowFlash.Children.Add(binHintInline);
+            p3.Children.Add(rowFlash);
+
+            rbBuildOnly.Margin = new Thickness(0, 4, 0, 0);
+            p3.Children.Add(rbBuildOnly);
+            rbIdentify.Margin = new Thickness(0, 4, 0, 0);
+            p3.Children.Add(rbIdentify);
             left.Children.Add(MakeCard("③  操作方式", p3));
+
+            // 隐藏的功能控件（不占界面空间，保留状态持久化与脚本生成）
+            txtBin = new TextBox(); txtBin.Visibility = Visibility.Collapsed;
+            txtBinAddr = new TextBox(); txtBinAddr.Visibility = Visibility.Collapsed; txtBinAddr.Text = "0x10000";
+            txtBinDir = new TextBox(); txtBinDir.Visibility = Visibility.Collapsed;
+            btnBrowseBinDir = new Button(); btnBrowseBinDir.Visibility = Visibility.Collapsed;
+            left.Children.Add(txtBin); left.Children.Add(txtBinAddr);
+            left.Children.Add(txtBinDir); left.Children.Add(btnBrowseBinDir);
+
+            // 选中"仅烧录"时才显示 .bin 按钮
+            btnBrowseBin.Visibility = Visibility.Collapsed;
+            binHintInline.Visibility = Visibility.Collapsed;
+            rbFlashOnly.Checked += (s, e) => { btnBrowseBin.Visibility = Visibility.Visible; binHintInline.Visibility = Visibility.Visible; };
+            rbFlashOnly.Unchecked += (s, e) => { btnBrowseBin.Visibility = Visibility.Collapsed; binHintInline.Visibility = Visibility.Collapsed; };
+
+            // 选了 .bin 后在小字位置显示文件名；取消则清空回到项目烧录
+            btnBrowseBin.Click += (s, e) =>
+            {
+                Microsoft.Win32.OpenFileDialog dlg = new Microsoft.Win32.OpenFileDialog();
+                dlg.Title = "选择固件镜像 (.bin)（取消则清空，回到项目烧录）";
+                dlg.Filter = "固件镜像 (*.bin)|*.bin|所有文件 (*.*)|*.*";
+                if (!String.IsNullOrEmpty(txtBin.Text) && File.Exists(txtBin.Text)) dlg.FileName = txtBin.Text;
+                if (dlg.ShowDialog() == true)
+                {
+                    txtBin.Text = dlg.FileName;
+                    _binNameInline.Text = System.IO.Path.GetFileName(dlg.FileName);
+                    AppendLog("已选择固件：" + dlg.FileName);
+                }
+                else
+                {
+                    txtBin.Text = "";
+                    _binNameInline.Text = "留空 = 项目烧录；选 .bin = 免工程直写";
+                    AppendLog("已清空固件选择，将使用项目烧录。");
+                }
+                SaveState();
+            };
 
             // ---------- 一键烧录 ----------
             btnOneKey = MakeButton("►   一键烧录", ACCENT, ACCENT2, r: 12, big: true);
@@ -599,6 +676,7 @@ namespace EasyInputFlashWPF
         {
             var rb = new RadioButton();
             rb.Content = text;
+            rb.GroupName = "ops";
             rb.Foreground = new SolidColorBrush(Color.FromRgb(0xB4, 0xBA, 0xC7));
             rb.FontSize = 12.5;
             rb.FontFamily = new FontFamily("Microsoft YaHei UI");
@@ -870,6 +948,7 @@ namespace EasyInputFlashWPF
             }
         }
 
+
         bool ValidateProject()
         {
             string proj = txtProject.Text.Trim();
@@ -899,18 +978,86 @@ namespace EasyInputFlashWPF
         {
             string prof = ProfilePathForVersion(GetSelectedVersion());
             var sb = new StringBuilder();
+            sb.AppendLine("$ProgressPreference='SilentlyContinue';");
+            sb.AppendLine("$ErrorActionPreference='Continue';");
             if (!String.IsNullOrEmpty(prof)) sb.AppendLine(". '" + EscPs(prof) + "';");
             string proj = txtProject.Text.Trim();
-            if (!String.IsNullOrEmpty(proj)) sb.AppendLine("Set-Location '" + EscPs(proj) + "';");
 
             switch (operation)
             {
-                case "build": sb.AppendLine("idf.py build"); break;
-                case "flash": sb.AppendLine("idf.py -p " + port + " flash"); break;
-                case "buildflash": sb.AppendLine("idf.py build"); sb.AppendLine("if ($LASTEXITCODE -eq 0) { idf.py -p " + port + " flash }"); break;
-                case "identify": sb.AppendLine("esptool --port " + port + " chip_id"); break;
-                case "monitor": sb.AppendLine("idf.py -p " + port + " monitor"); break;
+                case "build":
+                    sb.AppendLine("Set-Location '" + EscPs(proj) + "';");
+                    sb.Append(EnvCheckPs());
+                    sb.AppendLine("idf.py build 2>&1");
+                    sb.AppendLine("if ($LASTEXITCODE -ne 0) { Write-Host ('[错误] 构建失败，退出码 ' + $LASTEXITCODE); exit $LASTEXITCODE }");
+                    sb.AppendLine("Write-Host '[完成] 构建成功'");
+                    sb.AppendLine("exit 0");
+                    break;
+                case "flash":
+                    sb.AppendLine("Set-Location '" + EscPs(proj) + "';");
+                    sb.AppendLine("idf.py -p " + port + " flash 2>&1");
+                    sb.AppendLine("if ($LASTEXITCODE -ne 0) { Write-Host ('[错误] 烧录失败，退出码 ' + $LASTEXITCODE); exit $LASTEXITCODE }");
+                    sb.AppendLine("Write-Host '[完成] 烧录成功'");
+                    sb.AppendLine("exit 0");
+                    break;
+                case "buildflash":
+                    sb.AppendLine("Set-Location '" + EscPs(proj) + "';");
+                    sb.Append(EnvCheckPs());
+                    sb.AppendLine("idf.py build 2>&1");
+                    sb.AppendLine("if ($LASTEXITCODE -ne 0) { Write-Host ('[错误] 构建失败，退出码 ' + $LASTEXITCODE); exit $LASTEXITCODE }");
+                    sb.AppendLine("idf.py -p " + port + " flash 2>&1");
+                    sb.AppendLine("if ($LASTEXITCODE -ne 0) { Write-Host ('[错误] 烧录失败，退出码 ' + $LASTEXITCODE); exit $LASTEXITCODE }");
+                    sb.AppendLine("Write-Host '[完成] 构建 + 烧录成功'");
+                    sb.AppendLine("exit 0");
+                    break;
+                case "identify":
+                    sb.AppendLine("esptool --port " + port + " chip_id 2>&1");
+                    sb.AppendLine("if ($LASTEXITCODE -ne 0) { Write-Host ('[错误] 识别失败，退出码 ' + $LASTEXITCODE); exit $LASTEXITCODE }");
+                    sb.AppendLine("exit 0");
+                    break;
+                case "monitor":
+                    sb.AppendLine("Set-Location '" + EscPs(proj) + "';");
+                    sb.AppendLine("idf.py -p " + port + " monitor 2>&1");
+                    break;
+                case "flashbin":
+                    {
+                        string bin = txtBin.Text.Trim();
+                        string binDir = txtBinDir.Text.Trim();
+                        string addr = txtBinAddr.Text.Trim();
+                        string scr = Path.Combine(Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location), "flash-esp32.ps1");
+                        sb.AppendLine("& '" + EscPs(scr) + "' -FlashBin -Port " + port
+                            + " -Bin '" + EscPs(bin) + "' -BinAddr '" + EscPs(addr)
+                            + "' -BinDir '" + EscPs(binDir) + "'");
+                        sb.AppendLine("if ($LASTEXITCODE -ne 0) { Write-Host ('[错误] 免工程烧录失败，退出码 ' + $LASTEXITCODE); exit $LASTEXITCODE }");
+                        sb.AppendLine("exit 0");
+                        break;
+                    }
             }
+            return sb.ToString();
+        }
+
+        // 检测项目 build 目录的 Python 环境与当前 IDF 环境是否一致，不一致则自动 fullclean 重新配置
+        // 依据 ESP-IDF 官方环境变量 IDF_PYTHON_ENV_PATH（idf.py 实际使用的 Python 根目录），避免被系统 PATH 里其他 Python 干扰
+        static string EnvCheckPs()
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("$cache = 'build\\CMakeCache.txt'");
+            sb.AppendLine("if (Test-Path $cache) {");
+            sb.AppendLine("    $pyLine = Select-String -Path $cache -Pattern '^PYTHON:UNINITIALIZED=' -ErrorAction SilentlyContinue | Select-Object -First 1");
+            sb.AppendLine("    $idfPyRoot = $env:IDF_PYTHON_ENV_PATH");
+            sb.AppendLine("    if ($pyLine -and $idfPyRoot) {");
+            sb.AppendLine("        $projPy = ($pyLine.Line -split '=', 2)[1].Trim()");
+            sb.AppendLine("        $projPyNorm = ($projPy -replace '/', '\\').TrimEnd('\\')");
+            sb.AppendLine("        $rootNorm = ($idfPyRoot -replace '/', '\\').TrimEnd('\\')");
+            sb.AppendLine("        if (-not $projPyNorm.StartsWith($rootNorm + '\\', [System.StringComparison]::OrdinalIgnoreCase)) {");
+            sb.AppendLine("            Write-Host '[信息] 检测到项目由不同的 Python 环境构建，自动 fullclean 重新配置...'");
+            sb.AppendLine("            Write-Host ('  项目构建 Python: ' + $projPy)");
+            sb.AppendLine("            Write-Host ('  当前 IDF Python: ' + $idfPyRoot)");
+            sb.AppendLine("            idf.py fullclean 2>&1");
+            sb.AppendLine("            if ($LASTEXITCODE -ne 0) { Write-Host ('[错误] fullclean 失败，退出码 ' + $LASTEXITCODE); exit $LASTEXITCODE }");
+            sb.AppendLine("        }");
+            sb.AppendLine("    }");
+            sb.AppendLine("}");
             return sb.ToString();
         }
 
@@ -930,13 +1077,31 @@ namespace EasyInputFlashWPF
                 StartProcess(BuildScript("build", ""), "== 仅构建 ==", false);
                 return;
             }
-            string p = GetSelectedPort();
-            if (String.IsNullOrEmpty(p)) { AppendLog("请先选择串口。", WarnBrush); return; }
-            if (!ValidateProject()) return;
             if (rbBuildFlash.IsChecked == true)
+            {
+                string p = GetSelectedPort();
+                if (String.IsNullOrEmpty(p)) { AppendLog("请先选择串口。", WarnBrush); return; }
+                if (!ValidateProject()) return;
                 StartProcess(BuildScript("buildflash", p), "== 构建 + 烧录 => " + p + " ==", false);
-            else if (rbFlashOnly.IsChecked == true)
-                StartProcess(BuildScript("flash", p), "== 仅烧录 => " + p + " ==", false);
+                return;
+            }
+            if (rbFlashOnly.IsChecked == true)
+            {
+                string p = GetSelectedPort();
+                if (String.IsNullOrEmpty(p)) { AppendLog("请先选择串口。", WarnBrush); return; }
+                string bin = txtBin.Text.Trim();
+                string binDir = txtBinDir.Text.Trim();
+                if (!String.IsNullOrEmpty(bin) || !String.IsNullOrEmpty(binDir))
+                {
+                    StartProcess(BuildScript("flashbin", p), "== 仅烧录（esptool 直写 .bin）=> " + p + " ==", false);
+                }
+                else
+                {
+                    if (!ValidateProject()) return;
+                    StartProcess(BuildScript("flash", p), "== 仅烧录（idf.py flash）=> " + p + " ==", false);
+                }
+                return;
+            }
         }
 
         void OneKeyBurn()
@@ -953,14 +1118,22 @@ namespace EasyInputFlashWPF
 
             string prof = ProfilePathForVersion(GetSelectedVersion());
             var sb = new StringBuilder();
+            sb.AppendLine("$ProgressPreference='SilentlyContinue';");
+            sb.AppendLine("$ErrorActionPreference='Continue';");
             if (!String.IsNullOrEmpty(prof)) sb.AppendLine(". '" + EscPs(prof) + "';");
             sb.AppendLine("Set-Location '" + EscPs(txtProject.Text.Trim()) + "';");
+            sb.Append(EnvCheckPs());
             sb.AppendLine("Write-Host '[信息] 写前验身 chip_id：' " + port);
-            sb.AppendLine("esptool --port " + port + " chip_id");
+            sb.AppendLine("esptool --port " + port + " chip_id 2>&1");
+            sb.AppendLine("if ($LASTEXITCODE -ne 0) { Write-Host ('[错误] 芯片识别失败，退出码 ' + $LASTEXITCODE); exit $LASTEXITCODE }");
             sb.AppendLine("Write-Host ''");
             sb.AppendLine("Write-Host '[信息] 开始构建 + 烧录 => " + port + "'");
-            sb.AppendLine("idf.py build");
-            sb.AppendLine("if ($LASTEXITCODE -eq 0) { idf.py -p " + port + " flash }");
+            sb.AppendLine("idf.py build 2>&1");
+            sb.AppendLine("if ($LASTEXITCODE -ne 0) { Write-Host ('[错误] 构建失败，退出码 ' + $LASTEXITCODE); exit $LASTEXITCODE }");
+            sb.AppendLine("idf.py -p " + port + " flash 2>&1");
+            sb.AppendLine("if ($LASTEXITCODE -ne 0) { Write-Host ('[错误] 烧录失败，退出码 ' + $LASTEXITCODE); exit $LASTEXITCODE }");
+            sb.AppendLine("Write-Host '[完成] 一键烧录成功'");
+            sb.AppendLine("exit 0");
 
             StartProcess(sb.ToString(), "== 一键烧录：端口 " + port + " ==", false);
         }
@@ -974,6 +1147,15 @@ namespace EasyInputFlashWPF
         }
 
         // ========================= 进程管理 =========================
+        static bool IsClixml(string line)
+        {
+            if (String.IsNullOrEmpty(line)) return false;
+            string t = line.TrimStart();
+            if (t.StartsWith("#< CLIXML")) return true;
+            if (t.Contains("schemas.microsoft.com/powershell")) return true;
+            return t.StartsWith("<Objs") || t.StartsWith("</Objs");
+        }
+
         void StartProcess(string script, string header, bool isMonitor)
         {
             if (_busy && _proc != null && !_proc.HasExited)
@@ -988,7 +1170,9 @@ namespace EasyInputFlashWPF
 
             var psi = new ProcessStartInfo();
             psi.FileName = "powershell.exe";
-            psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -EncodedCommand " + Encode(script);
+            string tempFile = Path.Combine(Path.GetTempPath(), "eif_" + Guid.NewGuid().ToString("N") + ".ps1");
+            File.WriteAllText(tempFile, script, new UTF8Encoding(true));
+            psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -File \"" + tempFile + "\"";
             psi.UseShellExecute = false;
             psi.RedirectStandardOutput = true;
             psi.RedirectStandardError = true;
@@ -1001,11 +1185,12 @@ namespace EasyInputFlashWPF
             {
                 _proc = new Process();
                 _proc.StartInfo = psi;
-                _proc.OutputDataReceived += (s, e) => { if (e.Data != null) AppendLog(e.Data); };
-                _proc.ErrorDataReceived += (s, e) => { if (e.Data != null) AppendLog(e.Data); };
+                _proc.OutputDataReceived += (s, e) => { if (e.Data != null && !IsClixml(e.Data)) AppendLog(e.Data); };
+                _proc.ErrorDataReceived += (s, e) => { if (e.Data != null && !IsClixml(e.Data)) AppendLog(e.Data); };
                 _proc.Exited += (s, e) =>
                 {
                     int code = _proc.ExitCode;
+                    try { File.Delete(tempFile); } catch { }
                     Dispatcher.BeginInvoke(new Action(() =>
                     {
                         AppendLog("");
@@ -1137,6 +1322,9 @@ namespace EasyInputFlashWPF
                 sb.AppendLine("version=" + GetSelectedVersion());
                 sb.AppendLine("project=" + txtProject.Text.Trim());
                 sb.AppendLine("port=" + GetSelectedPort());
+                sb.AppendLine("bin=" + txtBin.Text.Trim());
+                sb.AppendLine("binaddr=" + txtBinAddr.Text.Trim());
+                sb.AppendLine("bindir=" + txtBinDir.Text.Trim());
                 File.WriteAllText(StateFile, sb.ToString(), Encoding.UTF8);
             }
             catch { }
@@ -1156,8 +1344,16 @@ namespace EasyInputFlashWPF
                     if (k == "version") _lastVersion = v;
                     else if (k == "project") _lastProject = v;
                     else if (k == "port") _lastPort = v;
+                    else if (k == "bin") _lastBin = v;
+                    else if (k == "binaddr") _lastBinAddr = v;
+                    else if (k == "bindir") _lastBinDir = v;
                 }
                 txtProject.Text = _lastProject;
+                txtBin.Text = _lastBin;
+                txtBinAddr.Text = _lastBinAddr;
+                txtBinDir.Text = _lastBinDir;
+                if (!String.IsNullOrEmpty(_lastBin) && _binNameInline != null)
+                    _binNameInline.Text = System.IO.Path.GetFileName(_lastBin);
             }
             catch { }
         }

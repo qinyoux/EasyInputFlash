@@ -28,6 +28,18 @@
 .PARAMETER SkipBuild
     与 -Flash 配合，跳过构建直接烧录。
 
+.PARAMETER FlashBin
+    免工程烧录：用 esptool 直接写固件 .bin，无需 ESP-IDF 项目目录（无 CMakeLists.txt 也能烧）。
+
+.PARAMETER Bin
+    与 -FlashBin 配合，指定单个 .bin 固件文件（配合 -BinAddr 指定起始地址）。
+
+.PARAMETER BinAddr
+    与 -FlashBin/-Bin 配合，指定单个固件烧录的起始地址（默认 0x10000）。
+
+.PARAMETER BinDir
+    与 -FlashBin 配合，指定构建输出目录（自动识别 bootloader/分区表/app 固件并烧录）。
+
 .PARAMETER Monitor
     串口监视。
 
@@ -40,6 +52,8 @@
     .\flash-esp32.ps1 -Identify             # 自动端口识别芯片/MAC
     .\flash-esp32.ps1 -Port COM4 -Identify
     .\flash-esp32.ps1 -Project D:\app -Flash
+    .\flash-esp32.ps1 -FlashBin -Bin D:\fw\app.bin -BinAddr 0x10000 -Port COM4   # 免工程烧单个固件
+    .\flash-esp32.ps1 -FlashBin -BinDir D:\fw\build -Port COM4                   # 免工程烧构建目录
 #>
 param(
     [string]$Project = "",
@@ -50,6 +64,10 @@ param(
     [switch]$Flash,
     [switch]$SkipBuild,
     [switch]$Monitor,
+    [switch]$FlashBin,
+    [string]$Bin = "",
+    [string]$BinAddr = "",
+    [string]$BinDir = "",
     [switch]$Help
 )
 
@@ -209,6 +227,73 @@ function Invoke-Flash { param($Project, $Port, $Skip)
     return $ok
 }
 
+# ---- 免工程烧录（esptool 直写，无需 ESP-IDF 项目目录）----
+
+# 在目录中查找指定文件名（优先根目录，其次递归子目录）
+function Get-BinFile { param($Dir, $Name)
+    $root = Join-Path $Dir $Name
+    if (Test-Path $root) { return $root }
+    $hit = Get-ChildItem $Dir -Filter $Name -File -Recurse -ErrorAction SilentlyContinue |
+        Sort-Object FullName | Select-Object -First 1
+    if ($hit) { return $hit.FullName }
+    return $null
+}
+
+# 读取构建目录的 flasher_args.json（ESP-IDF 生成的烧录清单），失败返回空
+function Get-FlasherArgs { param($Dir)
+    $p = Join-Path $Dir 'flasher_args.json'
+    if (-not (Test-Path $p)) { return $null }
+    try { return (Get-Content $p -Raw | ConvertFrom-Json) } catch { return $null }
+}
+
+# 免工程烧录：单个 .bin（-Bin + -BinAddr），或构建目录（-BinDir，按 flasher_args.json 自动识别）
+function Invoke-FlashBin { param($Port, $Bin, $BinAddr, $BinDir)
+    $pairs = @(); $chipArgs = @(); $writeArgs = @()
+
+    if ($Bin) {
+        if (-not (Test-Path $Bin)) { Write-Err "固件文件不存在：$Bin"; return $false }
+        $addr = $BinAddr; if (-not $addr) { $addr = '0x10000' }
+        if ($addr -notmatch '^0x[0-9a-fA-F]+$') { Write-Err '地址格式错误，应为十六进制，如 0x10000。'; return $false }
+        $pairs += ,@($addr, (Resolve-Path $Bin).Path)
+    } elseif ($BinDir) {
+        if (-not (Test-Path $BinDir)) { Write-Err "目录不存在：$BinDir"; return $false }
+        $spec = Get-FlasherArgs $BinDir
+        if ($spec -and $spec.flash_files) {
+            if ($spec.extra_esptool_args) { $chipArgs = @($spec.extra_esptool_args) }
+            if ($spec.write_flash_args) { $writeArgs = @($spec.write_flash_args) }
+            foreach ($prop in $spec.flash_files.PSObject.Properties) {
+                $full = Join-Path $BinDir ([string]$prop.Value)
+                if (Test-Path $full) { $pairs += ,@([string]$prop.Name, (Resolve-Path $full).Path) }
+                else { Write-Warn "flasher_args.json 指向的文件不存在，忽略：$([string]$prop.Value)" }
+            }
+            if (-not $pairs) { Write-Err 'flasher_args.json 中无可用固件文件。'; return $false }
+        } else {
+            $boot = Get-BinFile $BinDir 'bootloader.bin'
+            $part = Get-BinFile $BinDir 'partition-table.bin'
+            $app  = Get-ChildItem $BinDir -Filter '*.bin' -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -notmatch '^bootloader\.bin$|^partition-table\.bin$' } |
+                Sort-Object Name | Select-Object -First 1 -ExpandProperty FullName
+            if (-not $boot -or -not $part -or -not $app) {
+                Write-Err '目录中未能识别 bootloader.bin / partition-table.bin / app.bin，请改用 -Bin 手动指定单个镜像。'; return $false
+            }
+            $pairs += ,@('0x1000', $boot)
+            $pairs += ,@('0x8000', $part)
+            $pairs += ,@('0x10000', $app)
+        }
+    } else {
+        Write-Err '请提供 -Bin <固件.bin> 或 -BinDir <构建输出目录>。'; return $false
+    }
+
+    Write-Info "免工程烧录：$Port，共 $($pairs.Count) 个镜像"
+    $argList = @('--port', $Port) + $chipArgs + @('write_flash') + $writeArgs
+    foreach ($p in $pairs) { $argList += $p }
+    Write-Host ('  esptool ' + ($argList -join ' ')) -ForegroundColor DarkGray
+    & esptool @argList 2>&1 | ForEach-Object { Write-Host $_ }
+    $ok = ($LASTEXITCODE -eq 0)
+    if ($ok) { Write-Ok '免工程烧录完成（Hash of data verified 即成功）。' } else { Write-Err '免工程烧录失败。' }
+    return $ok
+}
+
 function Invoke-Monitor { param($Project, $Port)
     Write-Info "串口监视：$Port（Ctrl+] 退出）"
     Push-Location $Project
@@ -240,6 +325,7 @@ function Show-InteractiveMenu { param($Project, $Port)
         Write-Host '    [6] 串口监视'
         Write-Host '    [7] 修改项目路径'
         Write-Host '    [8] 一键烧录  (自动识别端口→验身→构建→烧录)'
+        Write-Host '    [9] 免工程烧录  (esptool 直写 .bin，无需项目)'
         Write-Host '    [Q] 退出'
         Write-Host '  ➤ 请按键：' -ForegroundColor Green -NoNewline
         $key = [Console]::ReadKey($true)
@@ -257,6 +343,20 @@ function Show-InteractiveMenu { param($Project, $Port)
                     Write-Info "一键烧录：$Project  ->  $Port（写前验身）"
                     Invoke-ChipId $Port | Out-Null
                     Invoke-Flash $Project $Port $false
+                } catch { Write-Err $_.Exception.Message } }
+            '9' { try {
+                    $Port = Ensure-Port $Port
+                    Write-Info "免工程烧录，端口：$Port"
+                    $t = Read-Host '  类型 [1] 单个bin文件  [2] 构建目录(自动识别)'
+                    if ($t -eq '1') {
+                        $f = Read-Host '  固件 .bin 绝对路径'
+                        $a = Read-Host '  起始地址(默认 0x10000)'
+                        if (-not $a) { $a = '0x10000' }
+                        Invoke-FlashBin -Port $Port -Bin $f -BinAddr $a
+                    } elseif ($t -eq '2') {
+                        $d = Read-Host '  构建输出目录绝对路径'
+                        Invoke-FlashBin -Port $Port -BinDir $d
+                    } else { Write-Warn '无效选择，已取消。' }
                 } catch { Write-Err $_.Exception.Message } }
             'Q' { Write-Info '退出。'; return }
             default { Write-Warn '无效选项，请重试。' }
@@ -308,17 +408,20 @@ if (-not $Project) {
     elseif (Test-IdfProject (Get-Location).Path) { $Project = (Get-Location).Path }
     else { $Project = "" }
 }
-if ($Project -and -not (Test-IdfProject $Project)) { Write-Warn "指定项目缺少 CMakeLists.txt：$Project" }
-if (-not $Project) {
-    Write-Err '未自动定位到有效的 ESP-IDF 项目目录（未找到 CMakeLists.txt）。'
-    Write-Warn '请用 -Project <路径> 指定，或在交互菜单按 [7] 修改项目路径。'
+# 免工程烧录（-FlashBin）不依赖 ESP-IDF 项目，无需项目校验
+if (-not $FlashBin) {
+    if ($Project -and -not (Test-IdfProject $Project)) { Write-Warn "指定项目缺少 CMakeLists.txt：$Project" }
+    if (-not $Project) {
+        Write-Err '未自动定位到有效的 ESP-IDF 项目目录（未找到 CMakeLists.txt）。'
+        Write-Warn '请用 -Project <路径> 指定，或在交互菜单按 [7] 修改项目路径。'
+    }
 }
 
 # 仅列出端口
 if ($ListPorts) { $devs = Get-SerialDevices; Show-Devices $devs; exit 0 }
 
-# 非交互：构建 / 识别 / 烧录 / 监视
-if ($Build -or $Identify -or $Flash -or $Monitor) {
+# 非交互：构建 / 识别 / 烧录 / 监视 / 免工程烧录
+if ($Build -or $Identify -or $Flash -or $Monitor -or $FlashBin) {
     if ($Build) { Invoke-Build $Project; exit 0 }
     try {
         $Port = Ensure-Port $Port
@@ -326,6 +429,7 @@ if ($Build -or $Identify -or $Flash -or $Monitor) {
         if ($Identify) { Invoke-ChipId $Port; exit 0 }
         if ($Monitor)  { Invoke-Monitor $Project $Port; exit 0 }
         if ($Flash)    { Invoke-Flash $Project $Port $SkipBuild; exit 0 }
+        if ($FlashBin) { Invoke-FlashBin -Port $Port -Bin $Bin -BinAddr $BinAddr -BinDir $BinDir; exit 0 }
     } catch { Write-Err $_.Exception.Message; exit 1 }
 }
 
