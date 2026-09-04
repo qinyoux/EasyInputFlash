@@ -189,7 +189,8 @@ function Select-PortFromList { param($Devs, $Current)
 function Invoke-ChipId { param($Port)
     Write-Info "识别设备：$Port"
     $raw = & esptool --port $Port chip_id 2>&1 | Out-String
-    if (-not $raw.Trim()) { Write-Err '未拿到 esptool 输出，请检查串口/驱动。'; return $null }
+    $code = $LASTEXITCODE
+    if (-not $raw.Trim() -or $code -ne 0) { Write-Err '设备识别失败，请检查串口/驱动/是否进入下载模式。'; return $null }
     Write-Host $raw.Trim()
     Write-Host ""
     $chip = ''; $mac = ''; $flash = ''
@@ -229,12 +230,12 @@ function Invoke-Build { param($Project)
     if (Test-PythonEnvMismatch $Project) {
         Write-Warn '检测到项目由不同的 Python 环境构建，自动 fullclean 重新配置...'
         Push-Location $Project
-        try { idf.py fullclean 2>&1 | Out-Null } finally { Pop-Location }
+        try { idf.py fullclean 2>&1 | Out-Null; if ($LASTEXITCODE -ne 0) { Write-Warn 'fullclean 未完全成功，构建可能仍会失败。' } } finally { Pop-Location }
     }
 
     Write-Info "构建：$Project"
     Push-Location $Project
-    try { idf.py build; $ok = ($LASTEXITCODE -eq 0) } finally { Pop-Location }
+    try { idf.py build 2>&1; $ok = ($LASTEXITCODE -eq 0) } finally { Pop-Location }
     if ($ok) { Write-Ok '构建成功。' } else { Write-Err '构建失败。' }
     return $ok
 }
@@ -247,7 +248,7 @@ function Invoke-Flash { param($Project, $Port, $Skip)
     }
     Write-Info "烧录：$Project  ->  $Port"
     Push-Location $Project
-    try { idf.py -p $Port flash; $ok = ($LASTEXITCODE -eq 0) } finally { Pop-Location }
+    try { idf.py -p $Port flash 2>&1; $ok = ($LASTEXITCODE -eq 0) } finally { Pop-Location }
     if ($ok) { Write-Ok "烧录完成：$Port（若显示 Hash of data verified 即成功）。" } else { Write-Err '烧录失败。' }
     return $ok
 }
@@ -366,8 +367,8 @@ function Show-InteractiveMenu { param($Project, $Port)
             '8' { try {
                     $Port = Resolve-OneKeyPort $Port $devs
                     Write-Info "一键烧录：$Project  ->  $Port（写前验身）"
-                    Invoke-ChipId $Port | Out-Null
-                    Invoke-Flash $Project $Port $false
+                    if (Invoke-ChipId $Port) { Invoke-Flash $Project $Port $false }
+                    else { Write-Err '设备识别失败，已取消一键烧录。' }
                 } catch { Write-Err $_.Exception.Message } }
             '9' { try {
                     $Port = Ensure-Port $Port
