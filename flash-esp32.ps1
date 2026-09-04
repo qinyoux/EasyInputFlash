@@ -71,6 +71,8 @@ param(
     [switch]$Help
 )
 
+$ScriptVersion = '1.1.0'
+
 $StatePath = Join-Path $PSScriptRoot 'flash-esp32.state.json'
 if ($env:EASYINPUT_TOOL_STATE_DIR) { $StatePath = Join-Path $env:EASYINPUT_TOOL_STATE_DIR 'flash-esp32.state.json' }
 
@@ -205,8 +207,31 @@ function Invoke-ChipId { param($Port)
 # ====================================================================
 # 构建 / 烧录 / 监视
 # ====================================================================
+
+# 检测项目 build 目录的 Python 环境与当前 IDF 环境是否一致（不一致会触发 idf.py 的环境报错）
+# 依据 ESP-IDF 官方环境变量 IDF_PYTHON_ENV_PATH，避免被系统 PATH 里其他 Python 干扰
+function Test-PythonEnvMismatch { param($Project)
+    $cache = Join-Path $Project 'build\CMakeCache.txt'
+    if (-not (Test-Path $cache)) { return $false }
+    $pyLine = Select-String -Path $cache -Pattern '^PYTHON:UNINITIALIZED=' -ErrorAction SilentlyContinue | Select-Object -First 1
+    $idfPyRoot = $env:IDF_PYTHON_ENV_PATH
+    if (-not $pyLine -or -not $idfPyRoot) { return $false }
+    $projPy = ($pyLine.Line -split '=', 2)[1].Trim()
+    $projPyNorm = ($projPy -replace '/', '\').TrimEnd('\')
+    $rootNorm = ($idfPyRoot -replace '/', '\').TrimEnd('\')
+    return (-not $projPyNorm.StartsWith($rootNorm + '\', [System.StringComparison]::OrdinalIgnoreCase))
+}
+
 function Invoke-Build { param($Project)
     if (-not (Test-IdfProject $Project)) { Write-Err "当前项目不是有效的 ESP-IDF 项目（缺 CMakeLists.txt）：$Project"; Write-Warn '请用 -Project 或在菜单按 [7] 指定正确项目目录。'; return $false }
+
+    # 环境自愈：项目由不同 Python 环境构建时，自动 fullclean 重新配置（仅首次，之后增量构建）
+    if (Test-PythonEnvMismatch $Project) {
+        Write-Warn '检测到项目由不同的 Python 环境构建，自动 fullclean 重新配置...'
+        Push-Location $Project
+        try { idf.py fullclean 2>&1 | Out-Null } finally { Pop-Location }
+    }
+
     Write-Info "构建：$Project"
     Push-Location $Project
     try { idf.py build; $ok = ($LASTEXITCODE -eq 0) } finally { Pop-Location }
@@ -307,7 +332,7 @@ function Show-InteractiveMenu { param($Project, $Port)
     while ($true) {
         Write-Host ""
         Write-Host ("=" * 56) -ForegroundColor Cyan
-        Write-Host '  ESP32 烧录工具' -ForegroundColor Cyan
+        Write-Host "  ESP32 烧录工具 v$ScriptVersion" -ForegroundColor Cyan
         Write-Host ("=" * 56) -ForegroundColor Cyan
         Write-Host "  项目 : $Project"
         $cur = if ($Port) { $Port } else { '(未选择)' }
@@ -422,14 +447,14 @@ if ($ListPorts) { $devs = Get-SerialDevices; Show-Devices $devs; exit 0 }
 
 # 非交互：构建 / 识别 / 烧录 / 监视 / 免工程烧录
 if ($Build -or $Identify -or $Flash -or $Monitor -or $FlashBin) {
-    if ($Build) { Invoke-Build $Project; exit 0 }
+    if ($Build) { if (Invoke-Build $Project) { exit 0 } else { exit 1 } }
     try {
         $Port = Ensure-Port $Port
         Write-Info "使用端口：$Port"
-        if ($Identify) { Invoke-ChipId $Port; exit 0 }
+        if ($Identify) { if (Invoke-ChipId $Port) { exit 0 } else { exit 1 } }
         if ($Monitor)  { Invoke-Monitor $Project $Port; exit 0 }
-        if ($Flash)    { Invoke-Flash $Project $Port $SkipBuild; exit 0 }
-        if ($FlashBin) { Invoke-FlashBin -Port $Port -Bin $Bin -BinAddr $BinAddr -BinDir $BinDir; exit 0 }
+        if ($Flash)    { if (Invoke-Flash $Project $Port $SkipBuild) { exit 0 } else { exit 1 } }
+        if ($FlashBin) { if (Invoke-FlashBin -Port $Port -Bin $Bin -BinAddr $BinAddr -BinDir $BinDir) { exit 0 } else { exit 1 } }
     } catch { Write-Err $_.Exception.Message; exit 1 }
 }
 

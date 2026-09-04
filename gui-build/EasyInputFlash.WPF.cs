@@ -119,6 +119,7 @@ namespace EasyInputFlashWPF
         System.Collections.Generic.List<string> versions = new System.Collections.Generic.List<string>();
         string _lastVersion = "", _lastProject = "", _lastPort = "";
         string _lastBin = "", _lastBinAddr = "0x10000", _lastBinDir = "";
+        const string AppVersion = "1.1.0";
 
         static string StateFile
         {
@@ -131,7 +132,7 @@ namespace EasyInputFlashWPF
 
         public MainWindow()
         {
-            Title = "EasyInput Flash · ESP32 一键烧录 / 监视";
+            Title = "EasyInput Flash v" + AppVersion + " · ESP32 一键烧录 / 监视";
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
             Width = 1080;
             Height = 720;
@@ -263,7 +264,7 @@ namespace EasyInputFlashWPF
             dot.Effect = new DropShadowEffect { Color = ACCENT, BlurRadius = 8, ShadowDepth = 0, Opacity = 0.7 };
             brandWrap.Children.Add(dot);
             TextBlock brand = new TextBlock();
-            brand.Text = "EasyInput Flash";
+            brand.Text = "EasyInput Flash v" + AppVersion;
             brand.FontSize = 17;
             brand.FontWeight = FontWeights.Bold;
             brand.Foreground = Brushes.White;
